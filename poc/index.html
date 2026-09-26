@@ -98,8 +98,9 @@
 <section id="setup">
   <h1>YouTube 멀티뷰 싱크 PoC</h1>
   <p id="iosNotice" class="notice hidden">
-    iPhone/iPad에서는 웹 페이지가 영상 볼륨을 조절할 수 없어서, 볼륨 대신 <b>음소거 / 솔로</b> 버튼으로 들을 방송을 고릅니다.
-    첫 재생은 반드시 하단의 <b>▶</b> 버튼을 탭하세요.
+    iPhone/iPad는 소리 있는 영상을 <b>동시에 하나만</b> 재생할 수 있고, 웹 페이지가 볼륨을 조절할 수도 없습니다.
+    그래서 ★ 기준 방송만 소리를 켜고 나머지는 음소거로 시작합니다. 들을 방송은 라벨을 탭한 뒤 <b>🔊</b>로 바꾸세요.
+    재생/정지는 영상 자체 버튼 대신 하단의 <b>▶/⏸</b>를 사용하세요.
   </p>
   <label>방송 URL 또는 영상 ID (한 줄에 하나, 2~4개)
     <textarea id="urls" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
@@ -167,6 +168,8 @@ const DRIFT_SEEK_SEC   = 0.35;  // 이 이상 벌어지면 seekTo로 강제 정�
 const SEEK_COOLDOWN_MS = 1500;  // seek 직후 재검사 유예 (버퍼링 중 반복 seek 방지)
 const STALL_MS         = 3000;  // 재생 요청 후 이 시간 안에 시작 안 되면 막힌 것으로 판단
 const OWN_CMD_MS       = 1000;  // 우리가 보낸 명령으로 생긴 상태 변화는 사용자 조작으로 보지 않음
+const EXT_PAUSE_LIMIT  = 3;     // 이 횟수만큼 외부 요인으로 정지되면(10초 내) 자동 재시작을 멈춤
+const EXT_PAUSE_WINDOW = 10000;
 
 const YT_STATE = { UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 };
 const STATE_NAME = { '-1': 'unstarted', 0: 'ended', 1: 'playing', 2: 'paused', 3: 'buffering', 5: 'cued' };
@@ -314,7 +317,8 @@ async function setup(initial) {
   ids.forEach((id, i) => {
     const m = meta[id] || {};
     streams.push({ id, start: m.start ?? 0, hasStart: m.start != null, manual: Number.isFinite(offs[i]) ? offs[i] : 0,
-                   title: m.title || id, player: null, ready: false, tile: null, muted: false, vol: 100,
+                   // iOS 는 소리 있는 영상을 동시에 하나만 재생하므로 ★ 방송만 소리, 나머지는 음소거로 시작
+                   title: m.title || id, player: null, ready: false, tile: null, muted: isIOS && i !== masterIdx, vol: 100, extPauses: [],
                    lastSeek: 0, lastCmd: 0, waiting: 0, ended: false, playReqAt: 0, mutedRetry: false, blocked: false });
   });
   const missing = streams.filter(s => !s.hasStart).length;
@@ -369,7 +373,7 @@ function buildTile(s, i) {
     videoId: s.id,
     playerVars: { playsinline: 1, rel: 0, controls: 1, origin: location.origin },
     events: {
-      onReady: () => { s.ready = true; log(`${i + 1}번 ready dur=${duration(s)}`); if (streams.every(x => x.ready)) onAllReady(); },
+      onReady: () => { s.ready = true; if (s.muted) s.player.mute(); log(`${i + 1}번 ready dur=${duration(s)}`); if (streams.every(x => x.ready)) onAllReady(); },
       onStateChange: e => onStateChange(s, e.data),
       onError: e => {
         s.error = e.data;
@@ -429,8 +433,22 @@ function renderSelection() {
 }
 
 $('#masterBtn').onclick = () => { masterIdx = selIdx; renderSelection(); writeHash(); };
-$('#muteBtn').onclick = () => { setMuted(sel(), !sel().muted); renderSelection(); };
-$('#soloBtn').onclick = () => { streams.forEach(o => setMuted(o, o !== sel())); renderSelection(); };
+$('#muteBtn').onclick = () => {
+  const s = sel();
+  if (isIOS && s.muted && streams.some(o => o !== s && !o.muted)) {
+    solo(s);
+    toast('iPhone은 소리 있는 영상을 하나만 재생할 수 있어 다른 방송은 음소거했습니다.');
+  } else {
+    setMuted(s, !s.muted);
+  }
+  renderSelection();
+};
+$('#soloBtn').onclick = () => { solo(sel()); renderSelection(); };
+// 다른 방송을 먼저 음소거한 뒤 소리를 켜야 iOS 가 서로 정지시키지 않음
+function solo(s) {
+  streams.forEach(o => o !== s && setMuted(o, true));
+  setMuted(s, false);
+}
 $('#vol').oninput = e => {
   const s = sel();
   s.vol = +e.target.value;
@@ -494,7 +512,7 @@ function place(s, G, shouldPlay) {
   s.lastSeek = s.lastCmd = now;
   if (pos < 0 || (dur && pos >= dur)) {
     s.player.seekTo(pos < 0 ? 0 : dur, true);
-    s.player.pauseVideo();
+    s.player.pauseVideo(); s.lastPauseCmd = now;
     s.waiting = pos < 0 ? -pos : 0;
     s.ended = pos >= 0;
     s.playReqAt = 0;
@@ -507,7 +525,7 @@ function place(s, G, shouldPlay) {
     s.synced = true;
     if (!s.playReqAt) s.playReqAt = now;
   } else {
-    s.player.pauseVideo();
+    s.player.pauseVideo(); s.lastPauseCmd = now;
   }
 }
 
@@ -533,7 +551,7 @@ function pauseAll() {
   playing = false;
   log(`⏸ pauseAll G=${lastG.toFixed(1)}`);
   const now = performance.now();
-  streams.forEach(s => { s.lastCmd = now; s.playReqAt = 0; s.player.pauseVideo(); });
+  streams.forEach(s => { s.lastCmd = s.lastPauseCmd = now; s.playReqAt = 0; s.player.pauseVideo(); });
   renderPlayBtn();
 }
 $('#playPause').onclick = () => { if (streams.every(s => s.ready)) playing ? pauseAll() : playAll(); };
@@ -575,17 +593,49 @@ function onStateChange(s, state) {
     s.synced = s.synced && state === YT_STATE.PAUSED;
   }
 
-  // 기준(★) 방송을 그 방송 자체 컨트롤로 재생/정지하면 전체에 반영
-  const userAction = performance.now() - s.lastCmd > OWN_CMD_MS;
-  if (s !== master() || !userAction) return;
-  if (state === YT_STATE.PLAYING && !playing) {
+  const now = performance.now();
+  const userAction = now - s.lastCmd > OWN_CMD_MS;
+  const notOurPause = now - (s.lastPauseCmd || 0) > OWN_CMD_MS;   // 우리가 정지 명령을 보내지 않았는데 멈춤
+  // 다른 방송의 상태 변화 직후 멈췄다면 사용자 조작이 아니라 브라우저가 멈춘 것일 가능성이 큼
+  const othersJustChanged = streams.some(o => o !== s && now - (o.lastStateAt || 0) < 1500);
+  s.lastStateAt = now;
+
+  // 재생 중 우리가 멈추지 않았는데 멈춤 → 외부 정지(iOS 오디오 정책, 광고, 사용자 등)
+  if (state === YT_STATE.PAUSED && playing && notOurPause && !s.waiting && !s.ended) {
+    s.extPauses = s.extPauses.filter(t => now - t < EXT_PAUSE_WINDOW);
+    s.extPauses.push(now);
+    log(`${i + 1}번 외부 정지 감지 (${s.extPauses.length}회/10초)`);
+    if (s.extPauses.length >= EXT_PAUSE_LIMIT) { onRepeatedExtPause(s, i); return; }
+  }
+
+  // 기준(★) 방송을 그 방송 자체 컨트롤로 재생/정지하면 전체에 반영.
+  // iOS 는 시스템이 멈춘 것과 사용자가 멈춘 것을 구분할 수 없어 정지 전파는 하지 않음(하단 ⏸ 사용)
+  if (s !== master()) return;
+  if (state === YT_STATE.PLAYING && !playing && userAction) {
     const G = timelineAt(s, curTime(s));
     playing = true; lastG = G; s.synced = true; refIdx = i;
     log(`★ 방송 자체 재생 → 전체 재생 G=${G.toFixed(1)}`);
     alignAll(G, s); renderPlayBtn();
-  } else if (state === YT_STATE.PAUSED && playing && !s.waiting && !s.ended) {
+  } else if (state === YT_STATE.PAUSED && playing && notOurPause && !s.waiting && !s.ended && !isIOS && !othersJustChanged) {
     log('★ 방송 자체 정지 → 전체 정지');
     pauseAll();
+  }
+}
+
+// 같은 방송이 짧은 시간에 계속 멈추면 재시작 싸움을 멈춤: ① 음소거 후 재시도 ② 직접 탭 안내
+function onRepeatedExtPause(s, i) {
+  s.extPauses = [];
+  if (!s.muted) {
+    log(`${i + 1}번 반복 정지 → 음소거 후 재시도`);
+    setMuted(s, true);
+    if (i === selIdx) renderSelection();
+    toast(`${i + 1}번 방송이 계속 멈춰서 음소거했습니다. (iPhone은 소리 있는 영상을 하나만 재생)`, 6000);
+    place(s, refG(), true);
+  } else {
+    log(`${i + 1}번 음소거 상태에서도 반복 정지 → 자동 재시작 중단, 탭 안내`);
+    s.blocked = true; s.synced = false;
+    $('.tapHint', s.tile).classList.remove('hidden');
+    toast(`${i + 1}번 방송이 계속 멈춥니다. 영상을 직접 한 번 탭해 주세요.`, 8000);
   }
 }
 
@@ -635,7 +685,7 @@ function tick() {
     if (s.waiting && want >= 0) { place(s, G, true); return; }
     if (want < 0) return;
     if (duration(s) && want >= duration(s)) {           // 이 방송은 이미 끝난 구간
-      if (st === YT_STATE.PLAYING) { s.lastCmd = now; s.player.pauseVideo(); }
+      if (st === YT_STATE.PLAYING) { s.lastCmd = s.lastPauseCmd = now; s.player.pauseVideo(); }
       s.ended = true;
       return;
     }
