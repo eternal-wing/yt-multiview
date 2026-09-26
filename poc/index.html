@@ -3,103 +3,136 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0f1115">
 <title>YT Multiview Sync PoC</title>
 <style>
   :root {
     --bg: #0f1115; --panel: #181b22; --line: #2a2f3a; --text: #e8eaf0; --muted: #9aa3b2;
-    --accent: #ff4d4d; --ok: #3ecf8e; --warn: #f5b942;
+    --accent: #ff4d4d; --sel: #4d9bff; --ok: #3ecf8e; --warn: #f5b942;
+    --label-h: 24px; --gap: 6px;
   }
   * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif; }
-  header, section { padding: 12px 16px; }
-  h1 { font-size: 16px; margin: 0 0 8px; }
-  .notice { background: #2a2210; border: 1px solid #5a4716; color: #f3d9a0; padding: 8px 10px; border-radius: 8px; margin: 8px 0; font-size: 13px; }
-  .hidden { display: none !important; }
-  textarea, input[type=text], input[type=password], input[type=number] {
-    width: 100%; background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px; font: inherit;
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.4 system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif;
+    display: flex; flex-direction: column; height: 100dvh; overflow: hidden;
+    -webkit-text-size-adjust: 100%;
   }
-  textarea { min-height: 84px; }
-  label.row { display: block; margin: 8px 0; color: var(--muted); }
-  button { background: #262b36; color: var(--text); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; font: inherit; cursor: pointer; touch-action: manipulation; }
+  .hidden { display: none !important; }
+  button {
+    background: #262b36; color: var(--text); border: 1px solid var(--line); border-radius: 6px;
+    min-width: 36px; height: 36px; padding: 0 8px; font: inherit; cursor: pointer; touch-action: manipulation;
+  }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
-  button:disabled { opacity: .45; }
-  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-  #transport { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); }
-  #seek { flex: 1 1 200px; }
-  .time { font-variant-numeric: tabular-nums; color: var(--muted); }
-  #grid { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 12px 16px 40px; }
-  @media (min-width: 900px) { #grid.n2, #grid.n3, #grid.n4 { grid-template-columns: 1fr 1fr; } }
-  .tile { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
-  .tile.master { border-color: var(--accent); }
+  button.on { border-color: var(--accent); color: var(--accent); }
+  button:disabled { opacity: .4; }
+  input[type=range] { accent-color: var(--accent); }
+
+  /* ---- 설정 패널: 처음엔 전체 화면, 불러온 뒤엔 영상 위에 덮는 오버레이 ---- */
+  #setup { padding: 12px 16px; overflow-y: auto; flex: 1; }
+  body.loaded #setup { position: fixed; inset: 0; z-index: 20; background: rgba(15, 17, 21, .97); }
+  #setup h1 { font-size: 16px; margin: 0 0 8px; }
+  #setup label { display: block; margin: 10px 0; color: var(--muted); }
+  #setup textarea, #setup input {
+    width: 100%; margin-top: 4px; background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px; font-family: inherit; font-size: 16px; /* 16px: iOS 입력 시 자동 확대 방지 */
+  }
+  #setup textarea { min-height: 96px; }
+  .notice { background: #2a2210; border: 1px solid #5a4716; color: #f3d9a0; padding: 8px 10px; border-radius: 8px; font-size: 13px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  #setupMsg { color: var(--muted); }
+
+  /* ---- 영상 영역: 열 수와 크기는 fitLayout()이 계산 ---- */
+  #stage { flex: 1; min-height: 0; overflow: auto; padding: var(--gap); }
+  #grid { display: grid; gap: var(--gap); justify-content: center; align-content: center; min-height: 100%; }
+  .tile { background: var(--panel); border-radius: 6px; overflow: hidden; outline: 2px solid transparent; }
+  .tile.sel { outline-color: var(--sel); }
   .video { position: relative; aspect-ratio: 16 / 9; background: #000; }
   .video > * { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .ctl { padding: 8px 10px; display: grid; gap: 6px; }
-  .ctl .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ctl .meta { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-  .ctl input[type=range] { flex: 1 1 120px; }
-  .ctl input[type=number] { width: 90px; padding: 4px 6px; }
-  .ctl button { padding: 4px 8px; }
-  .drift.ok { color: var(--ok); } .drift.bad { color: var(--warn); }
+  .label {
+    height: var(--label-h); display: flex; align-items: center; gap: 6px; padding: 0 6px;
+    font-size: 12px; cursor: pointer; user-select: none; -webkit-user-select: none;
+  }
+  .label .num { flex: none; width: 16px; height: 16px; border-radius: 50%; background: var(--line); font-size: 11px; display: grid; place-items: center; }
+  .tile.sel .label .num { background: var(--sel); color: #fff; }
+  .label .star { color: var(--accent); flex: none; }
+  .label .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .label .st { flex: none; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .st .ok { color: var(--ok); } .st .bad { color: var(--warn); }
+
+  /* ---- 하단 도크 ---- */
+  #dock {
+    flex: none; border-top: 1px solid var(--line); background: var(--panel);
+    padding: 4px 12px calc(6px + env(safe-area-inset-bottom)); display: grid; gap: 4px;
+  }
+  #dock { grid-template-columns: minmax(0, 1fr); }
+  #dock .row { gap: 4px; flex-wrap: nowrap; min-width: 0; }
+  #dock button { flex: 0 1 auto; min-width: 32px; padding: 0 6px; font-size: 14px; white-space: nowrap; }
+  #seek { width: 100%; margin: 0; height: 24px; }
+  #clock { flex: 1; min-width: 0; overflow: hidden; text-align: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  #selNum { flex: none; width: 22px; height: 22px; border-radius: 50%; background: var(--sel); color: #fff; font-size: 12px; display: grid; place-items: center; }
+  #manual { flex: none; width: 50px; height: 36px; text-align: center; background: var(--bg); color: var(--text); border: 1px solid var(--line); border-radius: 6px; font-family: inherit; font-size: 16px; padding: 0 2px; }
+  .spacer { flex: 1; }
+  #vol { flex: 1; min-width: 0; }
 </style>
 </head>
 <body>
-<header>
-  <h1>YouTube 멀티뷰 싱크 PoC</h1>
-  <div id="iosNotice" class="notice hidden">
-    iPhone/iPad 감지: iOS는 웹 페이지가 영상 볼륨을 조절하는 것을 허용하지 않습니다. 볼륨 슬라이더 대신 <b>음소거 / 솔로</b> 버튼으로 들을 방송을 선택하세요.
-    첫 재생은 반드시 아래 <b>전체 재생</b> 버튼을 탭해야 합니다.
-  </div>
-</header>
 
 <section id="setup">
-  <label class="row">방송 URL 또는 영상 ID (한 줄에 하나, 2~4개)
+  <h1>YouTube 멀티뷰 싱크 PoC</h1>
+  <p id="iosNotice" class="notice hidden">
+    iPhone/iPad에서는 웹 페이지가 영상 볼륨을 조절할 수 없어서, 볼륨 대신 <b>음소거 / 솔로</b> 버튼으로 들을 방송을 고릅니다.
+    첫 재생은 반드시 하단의 <b>▶</b> 버튼을 탭하세요.
+  </p>
+  <label>방송 URL 또는 영상 ID (한 줄에 하나, 2~4개)
     <textarea id="urls" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/..."></textarea>
   </label>
-  <label class="row">YouTube Data API 키 (선택 — 입력하면 방송 시작시각으로 자동 싱크)
+  <label>YouTube Data API 키 (선택 — 입력하면 방송 시작시각으로 자동 싱크)
     <input id="apiKey" type="password" autocomplete="off" placeholder="AIza...">
   </label>
-  <div class="bar">
+  <div class="row">
     <button id="loadBtn" class="primary">불러오기</button>
-    <span id="setupMsg" class="time"></span>
+    <button id="closeSetup" class="hidden">닫기</button>
+    <span id="setupMsg"></span>
   </div>
 </section>
 
-<section id="transport" class="hidden">
-  <div class="bar">
-    <button id="playAll" class="primary">▶ 전체 재생</button>
-    <button id="pauseAll">⏸ 전체 정지</button>
-    <button data-jump="-10">−10s</button>
-    <button data-jump="10">+10s</button>
-    <button id="resync">재정렬</button>
-    <input id="seek" type="range" min="0" max="0" step="1" value="0">
-    <span id="clock" class="time">0:00:00 / 0:00:00</span>
-    <button id="shareBtn">링크 복사</button>
-  </div>
-</section>
+<main id="stage" class="hidden"><div id="grid"></div></main>
 
-<div id="grid"></div>
+<footer id="dock" class="hidden">
+  <input id="seek" type="range" min="0" max="0" step="1" value="0" aria-label="기준 방송 위치">
+  <div class="row">
+    <button id="playPause" class="primary" aria-label="전체 재생/정지">▶</button>
+    <button data-jump="-10">−10</button>
+    <button data-jump="10">+10</button>
+    <button id="resync" title="모든 방송을 다시 정렬">⟲</button>
+    <span id="clock">0:00:00 / 0:00:00</span>
+    <button id="shareBtn" title="링크 복사">🔗</button>
+    <button id="openSetup" title="설정">⚙</button>
+  </div>
+  <div class="row" aria-label="선택한 방송 제어">
+    <span id="selNum">1</span>
+    <button id="masterBtn" title="기준 방송으로 지정">★</button>
+    <button id="muteBtn" aria-label="음소거">🔊</button>
+    <button id="soloBtn">솔로</button>
+    <span class="spacer"></span>
+    <button data-nudge="-1">−1</button>
+    <button data-nudge="-0.1">−.1</button>
+    <input id="manual" type="number" inputmode="decimal" step="0.1" value="0" aria-label="수동 보정(초)">
+    <button data-nudge="0.1">+.1</button>
+    <button data-nudge="1">+1</button>
+  </div>
+  <div id="volRow" class="row">
+    <span>🔈</span><input id="vol" type="range" min="0" max="100" value="100" aria-label="선택한 방송 볼륨"><span id="volVal">100</span>
+  </div>
+</footer>
 
 <template id="tileTpl">
   <div class="tile">
     <div class="video"><div class="player"></div></div>
-    <div class="ctl">
-      <div class="title">로딩 중…</div>
-      <div class="bar">
-        <label><input type="radio" name="master" class="masterRadio"> 기준</label>
-        <button class="muteBtn">🔊</button>
-        <button class="soloBtn">솔로</button>
-        <input type="range" class="vol" min="0" max="100" value="100" aria-label="볼륨">
-      </div>
-      <div class="bar">
-        <span class="time">보정</span>
-        <button data-nudge="-1">−1s</button>
-        <button data-nudge="-0.1">−0.1</button>
-        <input type="number" class="manual" step="0.1" value="0" aria-label="수동 보정(초)">
-        <button data-nudge="0.1">+0.1</button>
-        <button data-nudge="1">+1s</button>
-      </div>
-      <div class="meta"></div>
-    </div>
+    <div class="label"><span class="num"></span><span class="star hidden">★</span><span class="name"></span><span class="st"></span></div>
   </div>
 </template>
 
@@ -129,13 +162,14 @@ const store = {
  *  manual_i > 0 이면 그 방송을 앞쪽(나중 장면)으로 당긴다.
  *  G 는 기준(master) 방송의 현재 위치로부터 역산한다.
  */
-const streams = [];      // { id, start, manual, player, ready, tile, title, lastSeek, muted }
+const streams = [];      // { id, start, manual, player, ready, tile, title, lastSeek, muted, vol, waiting }
 let masterIdx = 0;
+let selIdx = 0;          // 하단 도크가 제어하는 방송
 let playing = false;     // 사용자가 의도한 전체 재생 상태
 let syncTimer = null;
 let seekDragging = false;
 
-if (isIOS) $('#iosNotice').classList.remove('hidden');
+if (isIOS) { $('#iosNotice').classList.remove('hidden'); $('#volRow').classList.add('hidden'); }
 $('#apiKey').value = store.get('ytmv.apiKey') || '';
 
 // ---- URL 파싱 ----
@@ -183,7 +217,7 @@ async function fetchStartTimes(ids, key) {
 }
 
 // ---- IFrame API 로드 ----
-let ytReady = new Promise(resolve => { window.onYouTubeIframeAPIReady = resolve; });
+const ytReady = new Promise(resolve => { window.onYouTubeIframeAPIReady = resolve; });
 function loadYT() {
   if (window.YT && window.YT.Player) return Promise.resolve();
   if (!document.getElementById('yt-api')) {
@@ -195,30 +229,34 @@ function loadYT() {
   return ytReady;
 }
 
-// ---- 초기화 ----
+// ---- 설정 패널 ----
 $('#loadBtn').onclick = () => setup();
+$('#openSetup').onclick = () => $('#setup').classList.remove('hidden');
+$('#closeSetup').onclick = () => $('#setup').classList.add('hidden');
 
 async function setup(initial) {
   const ids = $('#urls').value.split('\n').map(parseVideoId).filter(Boolean);
   const msg = $('#setupMsg');
+  msg.textContent = '';
   if (ids.length < 1 || ids.length > 4) { msg.textContent = '1~4개의 유효한 URL/ID를 입력하세요.'; return; }
 
   const key = $('#apiKey').value.trim();
   store.set('ytmv.apiKey', key);
-  let meta = {};
+  let meta = {}, apiFailed = false;
   if (key) {
     msg.textContent = '방송 시작시각 조회 중…';
     try { meta = await fetchStartTimes(ids, key); }
-    catch (e) { msg.textContent = `API 조회 실패(${e.message}) — 수동 보정으로 진행합니다.`; }
+    catch (e) { apiFailed = true; msg.textContent = `API 조회 실패(${e.message}) — 수동 보정으로 진행합니다.`; }
   }
 
   teardown();
   const offs = initial?.offs || [];
   masterIdx = Math.min(initial?.master || 0, ids.length - 1);
+  selIdx = masterIdx;
   ids.forEach((id, i) => {
     const m = meta[id] || {};
     streams.push({ id, start: m.start ?? 0, hasStart: m.start != null, manual: Number.isFinite(offs[i]) ? offs[i] : 0,
-                   title: m.title || id, player: null, ready: false, lastSeek: 0, muted: false, tile: null });
+                   title: m.title || id, player: null, ready: false, lastSeek: 0, muted: false, vol: 100, tile: null });
   });
   const missing = streams.filter(s => !s.hasStart).length;
   if (key && missing && missing < streams.length) {
@@ -226,49 +264,41 @@ async function setup(initial) {
     const ref = streams.find(s => s.hasStart).start;
     streams.forEach(s => { if (!s.hasStart) s.start = ref; });
   }
-  if (!msg.textContent.startsWith('API 조회 실패')) {
+  if (!apiFailed) {
     msg.textContent = key ? (missing ? `${missing}개 방송은 시작시각 정보가 없어 수동 보정이 필요합니다.` : '시작시각 기준 자동 싱크 적용됨.')
                           : 'API 키 없음 — 수동 보정으로 싱크를 맞추세요.';
   }
 
   await loadYT();
-  const grid = $('#grid');
-  grid.className = 'n' + streams.length;
-  streams.forEach((s, i) => buildTile(s, i, grid));
-  $('#transport').classList.remove('hidden');
+  document.body.classList.add('loaded');
+  $('#stage').classList.remove('hidden');
+  $('#dock').classList.remove('hidden');
+  $('#closeSetup').classList.remove('hidden');
+  // 오류 메시지가 없으면 설정 패널을 닫고 영상 화면으로
+  if (!apiFailed && !(key && missing)) $('#setup').classList.add('hidden');
+
+  streams.forEach((s, i) => buildTile(s, i));
+  fitLayout();
+  renderSelection();
   writeHash();
 }
 
 function teardown() {
   clearInterval(syncTimer); syncTimer = null;
   playing = false;
+  renderPlayBtn();
   streams.forEach(s => { try { s.player?.destroy(); } catch {} });
   streams.length = 0;
   $('#grid').innerHTML = '';
 }
 
-function buildTile(s, i, grid) {
+function buildTile(s, i) {
   const tile = $('#tileTpl').content.firstElementChild.cloneNode(true);
   s.tile = tile;
-  grid.appendChild(tile);
-  $('.title', tile).textContent = s.title;
-  $('.manual', tile).value = s.manual;
-  const radio = $('.masterRadio', tile);
-  radio.checked = i === masterIdx;
-  radio.onchange = () => { masterIdx = i; renderMaster(); writeHash(); };
-
-  const vol = $('.vol', tile);
-  if (isIOS) { vol.disabled = true; vol.title = 'iOS에서는 개별 볼륨 조절 불가'; }
-  vol.oninput = () => s.ready && s.player.setVolume(+vol.value);
-  $('.muteBtn', tile).onclick = () => setMuted(s, !s.muted);
-  $('.soloBtn', tile).onclick = () => streams.forEach(o => setMuted(o, o !== s));
-
-  $('.manual', tile).onchange = e => { s.manual = +e.target.value || 0; afterManualChange(); };
-  tile.querySelectorAll('[data-nudge]').forEach(b => b.onclick = () => {
-    s.manual = Math.round((s.manual + +b.dataset.nudge) * 100) / 100;
-    $('.manual', tile).value = s.manual;
-    afterManualChange();
-  });
+  $('#grid').appendChild(tile);
+  $('.num', tile).textContent = i + 1;
+  $('.name', tile).textContent = s.title;
+  $('.label', tile).onclick = () => { selIdx = i; renderSelection(); };
 
   s.player = new YT.Player($('.player', tile), {
     videoId: s.id,
@@ -276,28 +306,80 @@ function buildTile(s, i, grid) {
     events: {
       onReady: () => { s.ready = true; if (streams.every(x => x.ready)) onAllReady(); },
       onStateChange: e => onStateChange(s, e.data),
-      onError: e => { $('.meta', tile).textContent = `재생 오류 ${e.data} (임베드 금지/비공개 영상일 수 있음)`; },
+      onError: e => { $('.st', tile).textContent = `오류 ${e.data}`; $('.st', tile).title = '임베드 금지/비공개 영상일 수 있음'; },
     },
   });
-  renderMaster();
 }
 
 function onAllReady() {
-  // 정렬은 첫 '전체 재생' 시점에 수행 (cued 상태에서 seekTo 하면 자동재생이 시도되므로)
+  // 정렬은 첫 재생 시점에 수행 (cued 상태에서 seekTo 하면 자동재생이 시도되므로)
   syncTimer = setInterval(tick, SYNC_INTERVAL_MS);
 }
+
+// ---- 레이아웃: 화면 크기와 방송 수로 열 수를 골라 영상이 가장 크게 보이도록 ----
+function fitLayout() {
+  const n = streams.length;
+  if (!n) return;
+  const stage = $('#stage');
+  const cs = getComputedStyle(document.documentElement);
+  const gap = parseFloat(cs.getPropertyValue('--gap'));
+  const labelH = parseFloat(cs.getPropertyValue('--label-h'));
+  const W = stage.clientWidth - 2 * gap, H = stage.clientHeight - 2 * gap;
+  let best = { w: 0, cols: 1 };
+  for (let cols = 1; cols <= n; cols++) {
+    const rows = Math.ceil(n / cols);
+    const cellW = (W - (cols - 1) * gap) / cols;
+    const cellVideoH = (H - (rows - 1) * gap) / rows - labelH;
+    const w = Math.floor(Math.min(cellW, cellVideoH * 16 / 9));
+    if (w >= best.w * 0.97) best = { w, cols };   // 거의 같으면 열이 많은 격자를 선호
+  }
+  // 화면이 너무 낮으면(키보드 등) 최소 크기 유지 후 스크롤
+  const w = Math.max(best.w, Math.min(160, W));
+  $('#grid').style.gridTemplateColumns = `repeat(${best.cols}, ${w}px)`;
+}
+new ResizeObserver(fitLayout).observe($('#stage'));
+
+// ---- 선택한 방송 제어(하단 도크) ----
+const sel = () => streams[selIdx];
+
+function renderSelection() {
+  streams.forEach((s, i) => {
+    s.tile.classList.toggle('sel', i === selIdx);
+    $('.star', s.tile).classList.toggle('hidden', i !== masterIdx);
+  });
+  const s = sel();
+  if (!s) return;
+  $('#selNum').textContent = selIdx + 1;
+  $('#masterBtn').classList.toggle('on', selIdx === masterIdx);
+  $('#muteBtn').textContent = s.muted ? '🔇' : '🔊';
+  $('#manual').value = s.manual;
+  $('#vol').value = s.vol;
+  $('#volVal').textContent = s.vol;
+}
+
+$('#masterBtn').onclick = () => { masterIdx = selIdx; renderSelection(); writeHash(); };
+$('#muteBtn').onclick = () => { setMuted(sel(), !sel().muted); renderSelection(); };
+$('#soloBtn').onclick = () => { streams.forEach(o => setMuted(o, o !== sel())); renderSelection(); };
+$('#vol').oninput = e => {
+  const s = sel();
+  s.vol = +e.target.value;
+  $('#volVal').textContent = s.vol;
+  if (s.ready) s.player.setVolume(s.vol);
+};
+$('#manual').onchange = e => { sel().manual = +e.target.value || 0; afterManualChange(); };
+document.querySelectorAll('[data-nudge]').forEach(b => b.onclick = () => {
+  const s = sel();
+  s.manual = Math.round((s.manual + +b.dataset.nudge) * 100) / 100;
+  $('#manual').value = s.manual;
+  afterManualChange();
+});
 
 function setMuted(s, muted) {
   s.muted = muted;
   if (s.ready) muted ? s.player.mute() : s.player.unMute();
-  $('.muteBtn', s.tile).textContent = muted ? '🔇' : '🔊';
 }
 
 function afterManualChange() { writeHash(); alignAll(currentG(), false); }
-
-function renderMaster() {
-  streams.forEach((s, i) => s.tile?.classList.toggle('master', i === masterIdx));
-}
 
 // ---- 타임라인 계산 ----
 const master = () => streams[masterIdx];
@@ -310,16 +392,15 @@ const duration   = s => s.player.getDuration() || 0;
 function place(s, G, shouldPlay) {
   const pos = targetPos(s, G);
   const dur = duration(s);
+  s.lastSeek = performance.now();
   if (pos < 0 || (dur && pos >= dur)) {
     s.player.seekTo(pos < 0 ? 0 : dur, true);
     s.player.pauseVideo();
     s.waiting = pos < 0;
-    s.lastSeek = performance.now();
     return;
   }
   s.waiting = false;
   s.player.seekTo(pos, true);
-  s.lastSeek = performance.now();
   if (shouldPlay) s.player.playVideo(); else s.player.pauseVideo();
 }
 
@@ -329,8 +410,10 @@ function alignAll(G, includeMaster = true) {
 }
 
 // ---- 전체 제어 ----
+function renderPlayBtn() { $('#playPause').textContent = playing ? '⏸' : '▶'; }
+
 // iOS: playVideo 호출은 반드시 사용자 탭 핸들러 안에서 동기적으로 이뤄져야 함
-$('#playAll').onclick = () => {
+function playAll() {
   playing = true;
   const G = currentG();
   streams.forEach(s => {
@@ -338,8 +421,14 @@ $('#playAll').onclick = () => {
     if (pos >= 0 && pos < (duration(s) || Infinity)) s.player.playVideo();
   });
   alignAll(G, false);
-};
-$('#pauseAll').onclick = () => { playing = false; streams.forEach(s => s.player.pauseVideo()); };
+  renderPlayBtn();
+}
+function pauseAll() {
+  playing = false;
+  streams.forEach(s => s.player.pauseVideo());
+  renderPlayBtn();
+}
+$('#playPause').onclick = () => { if (streams.every(s => s.ready)) playing ? pauseAll() : playAll(); };
 $('#resync').onclick = () => alignAll(currentG(), false);
 document.querySelectorAll('[data-jump]').forEach(b => b.onclick = () => alignAll(currentG() + +b.dataset.jump));
 
@@ -349,18 +438,18 @@ seek.onchange = () => { seekDragging = false; alignAll(timelineAt(master(), +see
 
 $('#shareBtn').onclick = async () => {
   writeHash();
-  try { await navigator.clipboard.writeText(location.href); $('#shareBtn').textContent = '복사됨'; }
+  try { await navigator.clipboard.writeText(location.href); $('#shareBtn').textContent = '✓'; }
   catch { prompt('링크', location.href); }
-  setTimeout(() => $('#shareBtn').textContent = '링크 복사', 1500);
+  setTimeout(() => $('#shareBtn').textContent = '🔗', 1500);
 };
 
 // 기준 방송을 자체 컨트롤로 재생/정지하면 전체에 반영
 function onStateChange(s, state) {
   if (s !== master()) return;
   if (state === YT_STATE.PLAYING && !playing) {
-    playing = true; alignAll(currentG(), false);
+    playing = true; alignAll(currentG(), false); renderPlayBtn();
   } else if (state === YT_STATE.PAUSED && playing) {
-    playing = false; streams.forEach(o => o !== s && o.player.pauseVideo());
+    playing = false; streams.forEach(o => o !== s && o.player.pauseVideo()); renderPlayBtn();
   }
 }
 
@@ -378,10 +467,10 @@ function tick() {
     const cur = s.player.getCurrentTime() || 0;
     const drift = cur - want;
     const st = s.player.getPlayerState();
-    const meta = $('.meta', s.tile);
-    const auto = s.start - m.start;
-    meta.innerHTML = `위치 ${fmt(cur)} · 목표 ${fmt(Math.max(0, want))} · 오차 <span class="drift ${Math.abs(drift) < DRIFT_SEEK_SEC ? 'ok' : 'bad'}">${drift >= 0 ? '+' : ''}${drift.toFixed(2)}s</span>` +
-                     ` · 자동오프셋 ${auto >= 0 ? '+' : ''}${auto.toFixed(1)}s` + (s.waiting ? ' · 시작 대기' : '');
+    const man = s.manual ? `보정${s.manual > 0 ? '+' : ''}${s.manual} ` : '';
+    const d = s === m ? '' : s.waiting ? '대기' :
+      `<span class="${Math.abs(drift) < DRIFT_SEEK_SEC ? 'ok' : 'bad'}">${drift >= 0 ? '+' : ''}${drift.toFixed(2)}</span>`;
+    $('.st', s.tile).innerHTML = (s.muted ? '🔇 ' : '') + man + d;
 
     if (s === m || !playing || !masterRunning) return;
     if (now - s.lastSeek < SEEK_COOLDOWN_MS) return;
